@@ -15,7 +15,7 @@ BASE = Path(__file__).resolve().parent
 DOWNLOADS = BASE / "downloads"
 DOWNLOADS.mkdir(exist_ok=True)
 
-app = FastAPI(title="Bánh mì Video API", version="1.1.0")
+app = FastAPI(title="Bánh mì Video API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -33,12 +33,15 @@ ALLOWED_HOSTS = {
     "threads.net", "www.threads.net",
 }
 
+
 class AnalyzeRequest(BaseModel):
     url: HttpUrl
+
 
 class DownloadRequest(BaseModel):
     url: HttpUrl
     quality: str = "720"
+
 
 def host_allowed(url: str) -> bool:
     m = re.match(r"^https?://([^/]+)", url.lower())
@@ -47,21 +50,42 @@ def host_allowed(url: str) -> bool:
     host = m.group(1).split(":")[0]
     return host in ALLOWED_HOSTS or any(host.endswith("." + h) for h in ALLOWED_HOSTS)
 
+
 def safe_filename(value: str) -> str:
     value = re.sub(r'[\\/:*?"<>|\r\n]+', "_", value or "video")
     value = value.strip(" ._")
     return (value[:100] or "video")
 
+
 def run_ytdlp(url: str, extra: list[str], timeout: int = 300):
-    cmd = ["yt-dlp", "--no-playlist", "--no-warnings", *extra, url]
+    # Deno + yt-dlp EJS are required for current YouTube extraction.
+    cmd = [
+        "yt-dlp",
+        "--no-playlist",
+        "--no-warnings",
+        "--js-runtimes", "deno",
+        *extra,
+        url,
+    ]
     return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout)
+
 
 def cleanup_dir(path: Path):
     shutil.rmtree(path, ignore_errors=True)
 
+
+def compact_error(proc: subprocess.CompletedProcess) -> str:
+    raw = (proc.stderr or proc.stdout or "").strip()
+    raw = re.sub(r"\s+", " ", raw)
+    if len(raw) > 600:
+        raw = raw[-600:]
+    return raw or "yt-dlp không trả về chi tiết lỗi."
+
+
 @app.get("/")
 def root():
     return {"service": "banhmivideo-api", "ok": True, "health": "/api/health"}
+
 
 @app.get("/api/health")
 def health():
@@ -69,13 +93,15 @@ def health():
         "ok": True,
         "yt_dlp": shutil.which("yt-dlp") is not None,
         "ffmpeg": shutil.which("ffmpeg") is not None,
+        "deno": shutil.which("deno") is not None,
     }
+
 
 @app.post("/api/analyze")
 def analyze(req: AnalyzeRequest):
     url = str(req.url)
     if not host_allowed(url):
-        raise HTTPException(400, "Nền tảng này chưa được bật trong V1.")
+        raise HTTPException(400, "Nền tảng này chưa được bật.")
 
     try:
         p = run_ytdlp(url, ["--dump-single-json", "--skip-download"])
@@ -85,7 +111,10 @@ def analyze(req: AnalyzeRequest):
     if p.returncode != 0:
         raise HTTPException(
             400,
-            "Không lấy được thông tin video. Video có thể riêng tư hoặc nền tảng đang chặn truy cập."
+            {
+                "message": "Không lấy được thông tin video.",
+                "detail": compact_error(p),
+            },
         )
 
     try:
@@ -111,11 +140,12 @@ def analyze(req: AnalyzeRequest):
         "qualities": heights[:12],
     }
 
+
 @app.post("/api/download")
 def download(req: DownloadRequest, background_tasks: BackgroundTasks):
     url = str(req.url)
     if not host_allowed(url):
-        raise HTTPException(400, "Nền tảng này chưa được bật trong V1.")
+        raise HTTPException(400, "Nền tảng này chưa được bật.")
 
     quality = str(req.quality)
     if quality not in {"360", "480", "720", "1080"}:
@@ -132,6 +162,7 @@ def download(req: DownloadRequest, background_tasks: BackgroundTasks):
         "yt-dlp",
         "--no-playlist",
         "--restrict-filenames",
+        "--js-runtimes", "deno",
         "--recode-video", "mp4",
         "-f", fmt,
         "-o", str(output),
@@ -145,8 +176,15 @@ def download(req: DownloadRequest, background_tasks: BackgroundTasks):
         raise HTTPException(504, "Tải video quá lâu và đã bị dừng.")
 
     if p.returncode != 0:
+        detail = compact_error(p)
         cleanup_dir(work)
-        raise HTTPException(400, "Không tải được video. Hãy thử video công khai khác.")
+        raise HTTPException(
+            400,
+            {
+                "message": "Không tải được video.",
+                "detail": detail,
+            },
+        )
 
     mp4s = list(work.glob("*.mp4"))
     if not mp4s:
@@ -155,8 +193,6 @@ def download(req: DownloadRequest, background_tasks: BackgroundTasks):
 
     file = mp4s[0]
     download_name = safe_filename(file.stem) + ".mp4"
-
-    # Xóa thư mục tạm sau khi FileResponse hoàn tất gửi file.
     background_tasks.add_task(cleanup_dir, work)
 
     return FileResponse(
