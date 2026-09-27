@@ -15,7 +15,7 @@ BASE = Path(__file__).resolve().parent
 DOWNLOADS = BASE / "downloads"
 DOWNLOADS.mkdir(exist_ok=True)
 
-app = FastAPI(title="Bánh mì Video API", version="2.0.0")
+app = FastAPI(title="Bánh mì Video API", version="3.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -57,16 +57,21 @@ def safe_filename(value: str) -> str:
     return (value[:100] or "video")
 
 
-def run_ytdlp(url: str, extra: list[str], timeout: int = 300):
-    # Deno + yt-dlp EJS are required for current YouTube extraction.
-    cmd = [
+def ytdlp_base() -> list[str]:
+    # Current yt-dlp YouTube extraction benefits from the Deno JS runtime and
+    # the EJS component published with yt-dlp's remote components repository.
+    # The bgutil plugin supplies PO tokens through a local provider on 127.0.0.1:4416.
+    return [
         "yt-dlp",
         "--no-playlist",
         "--no-warnings",
         "--js-runtimes", "deno",
-        *extra,
-        url,
+        "--remote-components", "ejs:github",
     ]
+
+
+def run_ytdlp(url: str, extra: list[str], timeout: int = 300):
+    cmd = [*ytdlp_base(), *extra, url]
     return subprocess.run(cmd, text=True, capture_output=True, timeout=timeout)
 
 
@@ -77,23 +82,39 @@ def cleanup_dir(path: Path):
 def compact_error(proc: subprocess.CompletedProcess) -> str:
     raw = (proc.stderr or proc.stdout or "").strip()
     raw = re.sub(r"\s+", " ", raw)
-    if len(raw) > 600:
-        raw = raw[-600:]
+    if len(raw) > 900:
+        raw = raw[-900:]
     return raw or "yt-dlp không trả về chi tiết lỗi."
 
 
 @app.get("/")
 def root():
-    return {"service": "banhmivideo-api", "ok": True, "health": "/api/health"}
+    return {"service": "banhmivideo-api", "version": "3.0.0", "ok": True, "health": "/api/health"}
 
 
 @app.get("/api/health")
 def health():
+    provider_ok = False
+    try:
+        import urllib.request
+        with urllib.request.urlopen("http://127.0.0.1:4416/", timeout=2) as r:
+            provider_ok = r.status == 200
+    except Exception:
+        provider_ok = False
+
+    try:
+        ytdlp_version = subprocess.check_output(["yt-dlp", "--version"], text=True, timeout=5).strip()
+    except Exception:
+        ytdlp_version = None
+
     return {
         "ok": True,
+        "version": "3.0.0",
         "yt_dlp": shutil.which("yt-dlp") is not None,
+        "yt_dlp_version": ytdlp_version,
         "ffmpeg": shutil.which("ffmpeg") is not None,
         "deno": shutil.which("deno") is not None,
+        "pot_provider": provider_ok,
     }
 
 
@@ -159,12 +180,10 @@ def download(req: DownloadRequest, background_tasks: BackgroundTasks):
     fmt = f"bv*[height<={quality}]+ba/b[height<={quality}]/b"
 
     cmd = [
-        "yt-dlp",
-        "--no-playlist",
-        "--restrict-filenames",
-        "--js-runtimes", "deno",
-        "--recode-video", "mp4",
+        *ytdlp_base(),
         "-f", fmt,
+        "--restrict-filenames",
+        "--recode-video", "mp4",
         "-o", str(output),
         url,
     ]

@@ -1,16 +1,27 @@
-BÁNH MÌ VIDEO — BACKEND V2
+BÁNH MÌ VIDEO — BACKEND V3
 
-V2 fixes current YouTube extraction by adding Deno + yt-dlp EJS support.
+Mục tiêu: giữ API cũ nhưng thêm BgUtils PO Token Provider để yt-dlp có thể xử lý tốt hơn các yêu cầu YouTube từ IP cloud.
 
-Files to replace in the GitHub repo Banhmi:
+Các file phải nằm ở ROOT của GitHub repo:
 - Dockerfile
+- start.sh
 - main.py
 - requirements.txt
 - render.yaml
 
-After committing the changes, Render should automatically redeploy.
-Then /api/health should show:
-{"ok":true,"yt_dlp":true,"ffmpeg":true,"deno":true}
+Render sẽ tự build lại sau khi push commit mới.
 
-The Netlify frontend can keep the same API_BASE:
-https://banhmi-1nqh.onrender.com
+Sau khi deploy, mở:
+https://banhmi-1nqh.onrender.com/api/health
+
+Kết quả mong đợi:
+{
+  "ok": true,
+  "version": "3.0.0",
+  "yt_dlp": true,
+  "ffmpeg": true,
+  "deno": true,
+  "pot_provider": true
+}
+
+Lưu ý: PO token không đảm bảo mọi video/IP đều vượt được mọi kiểm tra của YouTube. Nếu YouTube thay đổi cơ chế, backend có thể lại cần cập nhật.
